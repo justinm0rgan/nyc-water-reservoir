@@ -1,0 +1,64 @@
+---
+title: "NYC Water Reservoir"
+author: "Justin Williams"
+date: "2023-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(pdftools)
+```
+
+## Data Gathering
+
+The data for the water reservoirs from this project will be gathered from the [USGS Surface-Water Data for New York]("https://waterdata.usgs.gov/ny/nwis/sw") website. First we need to identify which reservoirs data we will need. According to [NYC of Environmental Proction]("https://www.nyc.gov/site/dep/water/reservoir-levels.page") drinking water supply reservoir levels page, the following are the main water reservoirs supplying NYC:
+
+- Schoharie Reservoir
+- Cannonsville Reservoir
+- Pepacton Reservoir
+- Ashokan Reservoir
+- Neversink Reservoir
+- Rondout Reseroir
+- Croton System
+
+An additional web search was done for the [Ashokan Reservoir Wikipedia page]("https://en.wikipedia.org/wiki/Ashokan_Reservoir") which list the following:
+
+| New York City's water supply system |  |
+|:---:|:---:|
+| Croton reservoirs | New Croton · Boyds Corner · Middle Branch · East Branch / Bog Brook · Titicus · West Branch · Amawalk · Muscoot · Cross River · Croton Falls / Diverting |
+| Catskill & Delaware reservoirs | Ashokan · Kensico · Schoharie · Rondout · Neversink · Pepacton · Cannonsville |
+| Controlled lakes | Kirk · Gilead · Gleneida |
+| Waterways | Croton River · West Branch · Middle Branch · East Branch · Titicus River · Muscoot River · Cross River · Esopus Creek · Neversink River · Rondout Creek · Delaware River · East Branch · West Branch |
+| Aqueducts | New Croton · Old Croton · Catskill · Shandaken · Delaware · Neversink · East Delaware · West Delaware |
+| Storage reservoirs | Croton Distributing · Highbridge · Hillview · Jerome Park · Jacqueline Kennedy Onassis · Silver Lake · Ridgewood · Williamsbridge |
+| Distribution tunnels | NYC No. 1NYC No. 2NYC No. 3 (under construction) · Richmond |
+| Treatment plants | Catskill-Delaware UV · Croton Filtration |
+
+It's good to see NYC's full water supply system, however we will primarily dealing with water reservoirs, and their levels. Now that we have these reservoir lists, we can can gather the station numbers from [New York Water Ways list]("https://ny.water.usgs.gov/archived_files/annualdata/NYwysList2020.pdf"). Let's load this in and sort through data to find reservoirs.
+
+```{r load-data}
+# pdf url
+pdf_url <- "https://ny.water.usgs.gov/archived_files/annualdata/NYwysList2020.pdf"
+
+# temp file
+destfile <- tempfile()
+
+# download file
+download.file(pdf_url, destfile)
+
+# read into df
+(df <- pdftools::pdf_text(destfile))
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
