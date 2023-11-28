@@ -1,0 +1,302 @@
+---
+title: "Data Cleaning"
+author: "Justin Williams"
+date: "2023-11-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r import-packages, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(janitor)
+library(zoo)
+```
+
+## Data cleaning
+
+### Import data
+
+Let's first import the data gathered in the prior notebook.
+```{r import-data}
+# data for model
+df_weather <- readRDS("./data/central_park.rds") %>% clean_names()
+df_water_usage <- readRDS("./data/water_usage.rds") %>% clean_names()
+df_upstream <- readRDS("./data/upstream_discharge.rds") %>% clean_names()
+df_water_level <- readRDS("./data/water_level.rds") %>% clean_names()
+df_census_data <- readRDS("./data/census_data.rds")
+```
+
+Let's look at the weather data first.
+
+### Weather Data
+
+File format information can be found [here](https://www1.ncdc.noaa.gov/pub/data/ghcn/daily/readme.txt)
+
+```{r weather-data}
+glimpse(df_weather)
+```
+
+Ok, there are 128 columns, and the years go as far back as 1869. The core `element` values I plan on using are as follows:
+
+| Elements | Description |
+|---|---|
+| PRCP | Precipitation (tenths of mm) |
+| SNOW | Snowfall (mm) |
+| SNWD | Snow depth (mm) |
+| TMAX | Maximum temperature (tenths of degrees C) |
+| TMIN | Minimum temperature (tenths of degrees C) |
+| ADPT | Average Dew Point Temperature for the day (tenths of degrees C) |
+| AWND | Average daily wind speed (tenths of meters per second) |
+| RHAV | Average relative humidity for the day (percent) |
+
+There are daily columns with 1 being the first day, 2 being the second day and so on for:
+
+| Column | Description |
+|---|---|
+| value1 | Value for the first day of the month |
+| mflag1 | measurement flag for the first day of the month |
+| qflag1 | quality flag for the first day of the month |
+| sflag | source flag for the first day of the month
+
+First, let's filter anything prior to 2013-10-01 to align with other data.
+
+```{r filter-weather-data}
+# filter weather data
+(df_weather <- df_weather %>% 
+  filter(year >= 2013))
+```
+
+I need to pivot this data from wide to long.
+I think its probably best for me to create a `day` column for the number day of the year, then create a datetime column. There will also be a `value`, `mflag`, `qflag` and `sflag` columns.
+```{r pivot-longer-weather}
+# pivot longer add date column
+(df_weather_long <- df_weather %>% 
+  pivot_longer(
+    cols = starts_with(c("value","mflag", "qflag", "sflag")),
+    names_to = c(".value","day"),
+    names_pattern = "(\\D+)(\\d+)") %>% 
+  mutate(date = as.Date(paste(year, month, day, sep = "-"))) %>%
+  pivot_wider(names_from = "element", values_from = c("value", "mflag", "qflag", "sflag")) %>% 
+   select(-c("year","month","day")) %>% 
+   drop_na(date) %>% 
+   rename_with(~gsub("value_", "", .), starts_with("value_")) %>% clean_names())
+```
+
+Ok, now lets select only the columns that are for the elements I would like to become predictor variables.
+```{r select-columns}
+# select necessary columns filter for date
+(df_weather_final <- df_weather_long %>% 
+  select(c(id, date, tmax, tmin, prcp, snow, snwd, adpt, awnd, rhav)) %>% 
+  filter(date >= "2013-10-01"))
+```
+
+### Upstream Discharge
+
+```{r upstream-data}
+glimpse(df_upstream)
+```
+
+There are 5 columns with 14 rows. 
+- `agency_cd` - agency from which the data is sourced
+- `site_no` - the site of the stream
+- `date` - date of the reading
+- `flow` - Discharge, cubic feet per second
+- `flow_cd` - flow code for stream flow, mean. daily
+
+Let's split the dataset for Catskill and Delaware.
+
+```{r split-catskill-delaware}
+df_upstream_sites
+```
+
+Let's join `station_nm` with upstream data.
+```{r name-upstream-data}
+# add name
+(df_upstream <- df_upstream %>% 
+  left_join(df_upstream_sites %>% select(site_no, station_nm)) %>% 
+  select(agency_cd, site_no, station_nm, everything()))
+```
+
+Filter for Catskill/Delaware
+```{r filter-delcat}
+# catskill upstream
+(df_upstream_catskill <- df_upstream %>% 
+  filter(site_no == "01350355"))
+
+# delaware upstream
+(df_upstream_delaware <- df_upstream %>% 
+    filter(site_no != "01350355"))
+```
+
+```{r check-output}
+df_upstream_delaware %>% 
+  group_by(site_no, station_nm) %>% summarise(n = n())
+```
+
+Pivot wider keeping `date` and `site_no` as columns with upstream prefix site no.
+
+```{r prefix-upstream}
+# prep catskill for joining with df
+(df_upstream_catskill_join <- df_upstream_catskill %>% 
+  select(date, site_no, flow) %>% 
+  pivot_wider(names_from = site_no, values_from = flow,
+              names_prefix = "flow_"))
+```
+
+Prep `df_upstream_delaware` for joining.
+```{r prep=upstream-delaware}
+# prep delaware upstream for joining
+(df_upstream_delaware_join <- df_upstream_delaware %>%
+  select(site_no, date, flow) %>% 
+  pivot_wider(names_from = site_no, values_from = flow,
+              names_prefix = "flow_"))
+```
+
+### Water level
+
+Need to pivot water level so that `site_no` is the column name with some sort of prefix to denote `station_nm`, the date, and then the value from which value column has the value that corresponds to each `site_no`.
+
+```{r drop-ending-cd}
+# split dataframe by delaware and catskill sites
+#catskill sites
+cat_sites <- c("01350100","01363400")
+
+# drop columns that end with cd
+df_water_level <- df_water_level %>% 
+    select(-ends_with("cd"))
+
+# split water level dataframe
+(df_water_level_catskill <- df_water_level %>% 
+  filter(site_no %in% cat_sites))
+
+(df_water_level_delaware <- df_water_level %>% 
+  filter(!site_no %in% cat_sites))
+```
+
+Ok, now let's filter by `site_no`, rename columns with suffix and join on `date`.
+```{r filter-rename-join-catskill}
+# filter catskill for one shorharie
+df_schoharie <- df_water_level_catskill %>% 
+  filter(site_no == cat_sites[[1]]) %>% 
+  select(site_no, date, x_62614) %>% 
+  pivot_wider(names_from = site_no,
+              values_from = x_62614,
+              names_prefix = "water_level_")
+
+# filter catskill ahshokan
+# average two together to get water level
+df_ashokan <- df_water_level_catskill %>% 
+  filter(site_no == cat_sites[[2]]) %>% 
+  select(-c(x_62614, x_62614_00011)) %>% 
+  mutate(water_level_01363400 = (x_west_basin_01363398_62614_00011 + 
+                                   x_east_basin_01363399_62614_00011) / 2) %>%
+  select(date, water_level_01363400)
+
+# join both dfs
+(df_water_level_catskill_join <- df_schoharie %>% left_join(df_ashokan))
+```
+
+Do the same for the Delaware sites water level.
+```{r delaware-water-level}
+# create unique delaware site list
+unique_delaware_sites <- unique(df_water_level_delaware$site_no)
+
+# create empty list
+result_list <- list()
+
+for (site in unique_delaware_sites) {
+  df_site <- df_water_level_delaware %>% 
+    filter(site_no == site) %>% 
+    select(site_no, date, x_62614_00011) %>%  
+    pivot_wider(names_from = site_no,
+              values_from = x_62614_00011,
+              names_prefix = "water_level_")
+  
+  # store result in a list
+  result_list[[as.character(site)]] <- df_site
+}
+
+# combine all dfs into one
+# function to join two dataframes by date
+join_by_date <- function(df1, df2) {
+  full_join(df1, df2, by = "date")
+}
+
+# join
+df_water_level_delaware_join <- reduce(result_list, join_by_date)
+```
+
+### Water Usage
+
+Let's clean up the water usage data for joining to the dataframe.
+- convert `year` to datetime, and set to january 1st
+- create a daily dataframe
+- join yearly with daily
+
+```{r water-usage}
+# create dates
+start_date <- as.Date("2013-01-01")
+end_date <- as.Date("2022-09-30")
+date_sequence <- seq(start_date, end_date, by = "day")
+
+# create dataframe with dates
+df_date <- data.frame(date = date_sequence)
+
+# convert year column to date format
+df_water_usage_date <- 
+  df_water_usage %>% 
+  mutate(date = as.Date(paste0(year,"-01-01")))
+
+# merge 
+df_water_usage_merged <- df_date %>% 
+  left_join(df_water_usage_date, by = "date") %>% 
+  fill(year)
+```
+
+Impute daily values from yearly by using linear interpolation to impute daily values from yearly.
+
+```{r impute-values}
+# linearly interpolate
+df_water_usage_int <- df_water_usage_merged %>% 
+  complete(date = seq(min(date), as.Date("2022-09-30"), by = "day")) %>%
+  mutate(nyc_pop_int = na.approx(new_york_city_population, 
+                                              na.rm = FALSE),
+    nyc_mgdpd_int = na.approx(
+      nyc_consumption_million_gallons_per_day, na.rm = FALSE),
+    per_cap_gppd_int = na.approx(per_capita_gallons_per_person_per_day, 
+                                 na.rm = FALSE)) %>% 
+  select(date, nyc_pop_int, nyc_mgdpd_int, per_cap_gppd_int) %>% 
+  fill(c(nyc_pop_int, nyc_mgdpd_int, per_cap_gppd_int)) # fill 2022
+```
+
+## Join all data
+
+Let's join all data into one contigious dataframe so we can actually do some EDA.
+
+```{r join-dataframes}
+# catskill
+(df_catskill <- df_weather_final %>% 
+  select(-id) %>% 
+  left_join(df_upstream_catskill_join) %>% 
+  left_join(df_water_level_catskill_join) %>% 
+  left_join(df_water_usage_int))
+```
+
+Join Delaware data:
+```{r join-delaware}
+(df_delaware <- df_weather_final %>% 
+  select(-id) %>% 
+  left_join(df_upstream_delaware_join) %>% 
+  left_join(df_water_level_catskill_join) %>% 
+  left_join(df_water_usage_int))
+```
+
+Ok, let's export these and start the EDA notebook!!!
+```{r export-data}
+saveRDS(df_catskill,"./data/df_catskill.rds")
+saveRDS(df_delaware,"./data/df_delaware.rds")
+```
+
