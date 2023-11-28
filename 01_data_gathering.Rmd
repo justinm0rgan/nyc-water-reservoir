@@ -1,28 +1,74 @@
 ---
-title: "NYC Water Reservoir"
+title: "Data Gatheringr"
 author: "Justin Williams"
 date: "2023-10-21"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=FALSE, message=FALSE, echo=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(janitor)
-library(pdftools)
+library(dataRetrieval)
+library(dotenv)
+library(rnoaa)
+library(tidycensus)
+library(RSocrata)
 ```
+
+# Objective:
+To predict levels of NYC water reservoirs. More explicitly, the water levels of the levels of the Ashokan and Rondout Reservoirs, endpoints of the Catkill and Delaware water systems. This would ultimately predict ~90% of NYC drinking water.
+
+Some other aspects to consider would be:
+
+1. Relative Importance: If the Kensico Reservoir supplies about 90% of NYC's water and the Jerome Park Reservoir contributes about 10%, you might consider a weighted average where the Kensico Reservoir has a higher weight (e.g., 90/10 or 80/20) to reflect their proportional contributions.
+
+2. Model Evaluation: After developing the model, evaluate its performance using historical data or validation datasets. Adjust the weights if necessary to improve the model's accuracy and relevance.
+
+3. Sensitivity Analysis: Perform sensitivity analysis to understand how changes in the weights impact the model's predictions. This analysis can help you assess the robustness of your model to variations in the weighting scheme.
 
 ## Data Gathering
 
-The data for the water reservoirs from this project will be gathered from the [USGS Surface-Water Data for New York]("https://waterdata.usgs.gov/ny/nwis/sw") website. First we need to identify which reservoirs data we will need. According to [NYC of Environmental Proction]("https://www.nyc.gov/site/dep/water/reservoir-levels.page") drinking water supply reservoir levels page, the following are the main water reservoirs supplying NYC:
+The data for the water reservoirs from this project will be gathered from the [USGS Surface-Water Data for New York]("https://waterdata.usgs.gov/ny/nwis/sw") website. 
 
+The NYC Water System is divided up into distinct systems: (maybe have a general map here)
+
+- Croton
+- Catskill
+- Delaware
+
+Within each of these systems, there are multiple reservoirs feeding a distribution reservoir.  The water is then given further treatments prior to being fed into residents homes. According to [National Academy of Sciences]("http://nap.nationalacademies.org/25851") the Delaware and Catskill systems make up ~90% of NYC drinking water, and are made up of the following:
+(map showing distribution reservoirs?)
+
+**Catskill System**
 - Schoharie Reservoir
+- Ashokan Reservoir
+
+**Delaware System**
 - Cannonsville Reservoir
 - Pepacton Reservoir
-- Ashokan Reservoir
 - Neversink Reservoir
-- Rondout Reseroir
-- Croton System
+- Rondout Reservoir
+- West Branch (this sometimes has water pass through)
+- Boyds Corners
+
+They are then all fed into the distribution center Kensico Reservoir, and dispersed accordingly for treatment.
+
+The oldest of the systems, the Croton System, is only about ~10% of the NYC total water supply. It gets fed into the Jerome Park Reservoir distribution center, and from there to treatment before flowing into the city as drinking water. 
+
+The reservoirs that make up the Croton System are as follows:
+
+**Croton System**
+- East Branch
+- Bog Brook
+- Titicus
+- Middle Branch
+- Croton Falls
+- Croton Falls Diverting
+- Cross River
+- Amawalk
+- Muscoot
+- New Croton
 
 An additional web search was done for the [Ashokan Reservoir Wikipedia page]("https://en.wikipedia.org/wiki/Ashokan_Reservoir") which list the following:
 
@@ -37,28 +83,477 @@ An additional web search was done for the [Ashokan Reservoir Wikipedia page]("ht
 | Distribution tunnels | NYC No. 1NYC No. 2NYC No. 3 (under construction) · Richmond |
 | Treatment plants | Catskill-Delaware UV · Croton Filtration |
 
-It's good to see NYC's full water supply system, however we will primarily dealing with water reservoirs, and their levels. Now that we have these reservoir lists, we can can gather the station numbers from [New York Water Ways list]("https://ny.water.usgs.gov/archived_files/annualdata/NYwysList2020.pdf"). Let's load this in and sort through data to find reservoirs.
+We will primarily dealing with water reservoirs, and their levels. Therefore, we can use the [dataRetrival]("https://doi-usgs.github.io/dataRetrieval/index.html") package to obtain the site numbers of the reservoirs in the Delaware and Catskill Water Systems.
 
-```{r load-data}
-# pdf url
-pdf_url <- "https://ny.water.usgs.gov/archived_files/annualdata/NYwysList2020.pdf"
+## Data Retrivel Package
 
-# temp file
-destfile <- tempfile()
+Let's try and get some data for *Ashokan Reservoir*.
+Once we get that working, we can try and get it for all of them.
+Site number info was gathered via [National Water Dashboard]("https://dashboard.waterdata.usgs.gov/app/nwd/en/?region=lower48&aoi=default").
 
-# download file
-download.file(pdf_url, destfile)
+```{r data-retrival-ashokan-reservoir}
+# get ashokan data
+ashokan <- whatNWISdata(siteNumber = "01363400")
 
-# read into df
-(df <- pdftools::pdf_text(destfile))
+# fetch all parameters from ashokan
+ashokan_params <- readNWISpCode(unique(ashokan$parm_cd)) 
+
+# select specific columns and join to obtain parameter names
+ashokan %>% 
+  select(data_type_cd, parm_cd, stat_cd,
+         count = count_nu) %>% 
+  filter(data_type_cd == "dv") %>% # filtered by dv
+  left_join(ashokan_params %>% 
+              select(parm_cd = parameter_cd, 
+                     parameter_nm),
+            by = c("parm_cd")) %>% 
+  arrange(desc(count))
 ```
 
-## Including Plots
+Looks like Ashokan Reservoir only has one parameter with `dv` values.
+Let's see if we can get a list of `data_type_cd` and their meanings. We may have to move from daily value to another measurement.
 
-You can also embed plots, for example:
+### Parameter List
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+We need to hone in on some parameters we will need for each site. So,
+let's find out all the `parm_cd` or Parameter Codes.
+
+```{r all-parm-cd}
+param_cds <- readNWISpCode("all")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Create a list of all the parameters I would like to download for each site.
+```{r all-parm-df}
+# param list
+param_list <- c("00010","00011","00020","00021","00045","00050","00059",
+                "00060","00117","00132","00401","00405","00434","90400",
+                "99979","00480","01351","72150","30210","72019")
+
+# filter to create df with only these parameters
+param_cds %>% 
+  filter(parameter_cd %in% param_list)
+```
+
+Search for parameters with `water level` in them.
+```{r all-parms}
+param_cds %>% 
+  filter(str_detect(parameter_cd, "62614"))
+```
+
+Let's take a look at the stat codes and get an idea of what each means.
+
+### Stat codes
+
+We can get a complete list of stat codes from the [USGS National Information System: Help System]("https://help.waterdata.usgs.gov/code/stat_cd_nm_query?stat_nm_cd=%25&fmt=html&inline=true")
+
+Here is the first portion of the corresponding table:
+
+| Stat Cd | Stat Nm | Stat Ds |
+|---|---|---|
+| 00001 | MAXIMUM | MAXIMUM VALUES |
+| 00002 | MINIMUM | MINIMUM VALUES |
+| 00003 | MEAN | MEAN VALUES |
+| 00004 | AM | VALUES TAKEN BETWEEN 0001 AND 1200 |
+| 00005 | PM | VALUES TAKEN BETWEEN 1201 AND 2400 |
+| 00006 | SUM | SUMMATION VALUES |
+| 00007 | MODE | MODAL VALUES |
+| 00008 | MEDIAN | MEDIAN VALUES |
+| 00009 | STD | STANDARD DEVIATION VALUES |
+| 00010 | VARIANCE | VARIANCE VALUES |
+| 00011 | INSTANTANEOUS | RANDOM INSTANTANEOUS VALUES |
+| 00012 | EQUIVALENT MEAN | EQUIVALENT MEAN VALUES |
+| 00013 | SKEWNESS | SKEWNESS VALUES |
+
+It looks like most values will be in `mean` 00003 or `random instantaneous values` 00011.
+
+Ok, let's create a site list and see what type of data is available for each site.
+
+### Site list
+
+Let's try searching for reservoir sites within the county list using `readNWISdata()`
+
+```{r readNWISdata-func}
+# function to search sites in county list
+nwis_sites <- function(county=county,
+                       state = "New York",
+                       service = "site",
+                       site_type = "LK",
+                       ...) {
+  df <- readNWISdata(
+    countyCd = county,
+    stateCd = state,
+    service = service,
+    siteType = site_type,
+    ...
+  )
+  return(df)
+}
+
+# delaware county search
+(df_del_county_sites <- nwis_sites(county = "Delaware", 
+                        parameterCd = "62614", siteName = "Pepacton"))
+```
+
+Ok, now that we can search for all sites in a county, let's apply this to all the counties that our reservoirs are in, and then filter by site type.
+
+```{r all-county-search}
+# delaware, catskill
+# county list
+county_list_delcat <- c("Delaware","Ulster","Sullivan", "Schoharie")
+# site name list
+site_name_delcat <- c("PEPACTON","CANNONSVILLE","NEVERSINK",
+                      "SCHOHARIE","RONDOUT","ASHOKAN")
+
+# croton
+# county list
+county_list_croton <- c("Westchester","Dutchess","Putnam")
+# site name list
+site_name_croton <- c("CROTON FALLS","NEW CROTON","KENSICO")
+
+nwis_sites(county = "Westchester")
+# apply function to county list
+(df_delcat_list <- lapply(county_list_delcat, nwis_sites, parameterCd = "62614"))
+(df_croton <- lapply(county_list_croton, nwis_sites)) # stating param didn't work
+```
+
+Now let's view all reservoirs in list to ensure they should be in study.
+
+```{r del-cat-list-review}
+# create empty df
+df_delcat <- data.frame()
+# combine each df from list into one
+for (i in df_delcat_list) {
+  df_delcat <- bind_rows(df_delcat,i)
+}
+
+# filter out reservoirs that we need
+(df_delcat <- df_delcat %>%
+  filter(str_detect(station_nm, str_c(site_name_delcat, collapse = "|"))))
+```
+
+Obtain Kensico Reservoir site and other to append to delcat dataframe. 
+
+```{r select-sites}
+# add sites from croton counties that belong in delcat system
+other_site_list <- c("BOYD CORNERS","WEST BRANCH")
+
+# isolate kensico
+(kensico <- df_croton[[1]] %>% 
+  filter(str_detect(station_nm, "KENSICO")))
+
+# other sites
+(other_sites <- df_croton[[3]] %>% 
+    filter(str_detect(station_nm, str_c(other_site_list, collapse = "|"))))
+
+# append to df_delcat
+(df_delcat <- df_delcat %>% 
+  bind_rows(kensico) %>% 
+    bind_rows(other_sites))
+```
+
+Now we have a df of all sites in delcat system. We can get data, as well as map for EDA.Let's save this data frame so we can call it into the next notebook for mapping.
+```{r save-delcatdf}
+saveRDS(df_delcat, file = "./data/df_delcat_sites.rds")
+```
+
+### Get data
+#### Delaware-Catskill System
+
+Let's get data for the Delaware-Catskill system.
+I need to find out what years and values each has through a search.
+```{r get-data-delcat}
+# define delcat site no
+site_no_delcat <- df_delcat$site_no
+
+# get site info and data from each site
+site_available <- whatNWISdata(siteNumber = site_no_delcat)
+
+# make list of parameter codes from site info
+pcodes <- unique(site_available$parm_cd)
+
+# get info for parameter codes
+pcode_info <- readNWISpCode(pcodes)
+
+# create df with select columns from site info and join with pcode info
+all_delcat_data <- site_available %>% 
+  select(site_no, station_nm, data_type_cd, parameter_cd = 
+           parm_cd, stat_cd, begin_date, end_date, count_nu) %>% 
+  left_join(pcode_info, by = "parameter_cd")
+
+# filter by dv
+all_delcat_data %>% 
+  filter(data_type_cd == "dv" & begin_date < "2013-10-02")
+```
+
+So the only reservoirs with `dv` from 2013 to present are as follows:
+
+**Catskill System**
+- Schohoharie
+- Ashokan 
+
+**Delaware System**
+- Pepacton
+- Cannonsville
+- Neversink
+- Roundout
+
+Let's get data from these:
+```{r get-data-delcat}
+# definei param
+param <- "62614"
+# define statistic types
+stat_type <- c("00003","00011")
+# define start date
+start_date <- "2013-10-01"
+
+# get data
+site_data_delcat <- readNWISdv(siteNumbers = site_no_delcat, 
+           statCd = stat_type,
+           parameterCd = param,
+           startDate = start_date) %>% 
+  renameNWISColumns()
+
+# preview
+glimpse(site_data_delcat)
+```
+
+Check to see if every site got data pulled:
+```{r check-data-pull}
+site_data_delcat %>% 
+  group_by(site_no) %>% 
+  summarise(n = n(), min_date = min(Date), max_date = max(Date)) %>% 
+  left_join(all_delcat_data %>% select(site_no, station_nm) %>% distinct(site_no,station_nm)) %>% 
+  select(site_no, station_nm, everything())
+```
+
+Ok, so we have daily value data for each of the reservoirs in the Delaware and Catskill system. The only aspects we don't have is the Kensico Reservoir daily values, as well as the West Basin and Boyds Corner. These reservoirs did not have data during this time period. This is ok as the water sometimes passes through West Basin, but not always. I requested Kensico Reservoir water levels for this time period from USGS, let's see if they have it. If not, we will predict Ashokan and Rondout Reservoirs as endpoints for Catskill and Delaware Systems respectively. For now let's save this data. 
+
+```{r save-water-level-delcat}
+saveRDS(site_data_delcat, "./data/water_level.rds")
+```
+
+### Streamflow
+
+Let's look at streamflow for rivers feeding into each of these reservoirs. These site numbers were using [National Water Dashboard]("https://dashboard.waterdata.usgs.gov/app/nwd/en/?region=lower48&aoi=default")
+
+**Upstream**
+*Delaware*
+Neversink
+- Neversink River Near Claryville `01435000`
+
+Cannonsville
+- West Branch Delaware River `01423000`
+
+Pepacton
+- Tremper Kill Near Andes `01415000`
+
+*Catskill*
+Schorharie
+- Schoharie Creek At Breakabeen `01350355`
+
+Let's get streamflow for these upstream sties.
+(I didn't look for sites upstream to Rondout and Ashokan as the reservoirs from each respective system feed into them.)
+
+```{r get-streamflow-data}
+# streamflow list
+streamflow_sites <- c("01435000","01423000","01415000","01350355")
+
+# get site info and data from each site
+streamflow_info <- whatNWISdata(siteNumber = streamflow_sites)
+
+# make list of parameter codes from site info
+pcodes <- unique(streamflow_info$parm_cd)
+
+# get infor for parameter codes
+pcode_info <- readNWISpCode(pcodes)
+
+# create all data df with select columns from site info and join with pcode info
+all_streamflow_data <- streamflow_info %>% 
+  select(site_no, station_nm, data_type_cd, parameter_cd = 
+           parm_cd, stat_cd, begin_date, end_date, count_nu) %>% 
+  left_join(pcode_info, by = "parameter_cd")
+
+# filter by dv and discharge parameter
+(all_streamflow_data <- all_stream_data %>% 
+  filter(data_type_cd == "dv" & parameter_cd == "00060"))
+```
+
+Let's save this data to map
+```{r save-stream-df}
+saveRDS(all_streamflow_data,"./data/upstream_data.rds")
+```
+
+
+Ok, we have ample discharge data for these upstream sites, let's get the data for these sites from 2013-10-01.
+
+```{r get-stream-data}
+# get stream data
+(all_stream_data_dv <- readNWISdv(siteNumbers = all_stream_data$site_no,
+           parameterCd = "00060",
+           startDate = start_date) %>% renameNWISColumns())
+```
+
+Confirm from each site.
+```{r check-output}
+all_stream_data_dv %>% 
+  group_by(site_no) %>% 
+  summarise(n = n(), min_date = min(Date), max_date = max(Date)) %>% 
+  left_join(all_stream_data %>% select(site_no, station_nm) %>% distinct(site_no,station_nm)) %>% 
+  select(site_no, station_nm, everything())
+```
+
+Ok great, let's save this data.
+```{r save-upstream-data}
+saveRDS(all_stream_data_dv,"./data/upstream_discharge.rds")
+```
+
+Let's obtain other variables.
+
+### Other data variables
+#### [Predicting Urban Reservoir Levels using Statistical Learning Techniques]("https://www.nature.com/articles/s41598-018-23509-w#MOESM1")
+
+**Data sources**
+-   NCEI for precipitation, humidity and temperature data: can use r package `rnoaa` to obtain this information from the site best for NYC.
+-   US Census Bureau for population data
+-   North Georgia Water Planning district water use data
+-   NOAA Climate Prediction Center soil moisture
+-   NOAA ENSO
+-   USGS streamflow Data from two locations, one 20 miles upstream from the reservoir, and the other 30 miles downstream from the city.
+-   Atlanta Harsfield International Airport meterorological data
+
+Daily values from 1965-2016.
+
+Response variable was reservoir level and predictors were:
+-   streamflow (into the reservoir)
+-   precipitation
+-   population
+-   water usage
+-   discharge (downstream of the city)
+-   ENSO index
+-   soil mosture
+-   dew point temperature
+-   relative humidity
+
+#### NOAA Api
+
+We must obtain daily weather data for NYC using the NOAA API through the rnoaa package. We will see if we can use Central Park as the site. We will obtain:
+-   precipitation
+-   dew point
+-   humidity
+
+```{r weather-data}
+# nyc lat lon
+nyc <- c(40.7128,-74.0060)
+
+# station list
+stations <- ghcnd_stations()
+
+# define lat, lon, radius
+latitude <- nyc[1]
+longitude <- nyc[2]
+
+# filter close to nyc
+(close_to_nyc <- stations %>% filter(latitude > 39 & latitude < 41 & longitude < -73 & longitude >-75 & state == "NY"))
+```
+
+Ok, let's group by `name` and highlight min/max and create por.
+```{r group-weather-data}
+close_to_nyc %>% 
+  group_by(id, name) %>% 
+  summarise(min_year = min(first_year),
+            max_year = max(last_year)) %>% 
+  mutate(por = max_year - min_year) %>% 
+  arrange(desc(por))
+```
+
+Ok, this shows us Central Park has the longest running weather station with records near NYC. NYC airports are also in the top 5. Let's isolate these records and see if they have all the variables needed.
+```{r central-park-airports}
+# create list of station names
+station_names <- c("NY CITY CNTRL PARK","LAGUARDIA AP","JFK INTL AP")
+
+# filter for just these records
+central_park_ap <- close_to_nyc %>% 
+  filter(name %in% station_names)
+```
+
+Let's group by record now and see the counts for each along with por.
+```{r central-park-ap}
+(best_stations_df <- central_park_ap %>% 
+  group_by(id, name) %>% 
+  summarise(min_year = min(first_year),
+            max_year = max(last_year),
+            count = n()) %>% 
+  mutate(por = max_year - min_year) %>% 
+  arrange(desc(por)))
+```
+
+Ok, let's use Central Park as it has the most records. Let's gather the data.
+```{r get-central-park-records}
+# central park data
+(cent_park <- ghcnd(stationid = "USW00094728"))
+```
+
+Save Central Park data as an rds for future reference.
+```{r save-weather-data}
+saveRDS(cent_park,file = "./data/central_park.rds")
+```
+
+### US Census Data
+
+Let's grab US Census data for NYC population.
+```{r census-data,message=FALSE}
+# year list
+years <- c(2005:2019)
+
+# define function for one year
+get_nyc_pop_data <- function(year) {
+  nyc_pop_data <- get_acs(geography = "county",
+        state = "NY",
+        county = c("Bronx","Kings","New York","Queens","Richmond"),
+        year = year,
+        survey = "acs1",
+        variables = c("B01003_001"),
+        key = Sys.getenv("CENSUS_API"),
+        )
+  return(nyc_pop_data)
+} 
+
+# use map to apply function to each year
+nyc_pop_data_list <- map(years, get_nyc_pop_data)
+```
+
+It wouldn't let me grab geography, but let's take a look at the data.
+```{r pop-data}
+nyc_pop_data_list
+```
+
+Ok, let's save this as an rds.
+```{r save-census-data}
+saveRDS(nyc_pop_data_list,file = "./data/census_data.rds")
+```
+
+Once the geography download works in `tidycensus` package, will download and get this later.
+
+### Water usage data for NYC
+
+Let's figure out where we can get water usage data for NYC.
+```{r water-usage-data}
+# define water consumption url
+water_consumption_url <- "https://data.cityofnewyork.us/resource/ia2d-e54m.json"
+
+# make api call
+(water_data_df <- read.socrata(
+  water_consumption_url,
+  app_token = Sys.getenv("SOCRATA_API"),
+))
+```
+
+Save water data.
+```{r save-water-usage-data}
+saveRDS(water_data_df,file = "./data/water_usage.rds")
+```
+
+# Appendix 2: Code      
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
