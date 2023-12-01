@@ -1,0 +1,208 @@
+---
+title: "Exploratory Data Analysis"
+author: "Justin Williams"
+date: "2023-11-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r import-packages, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(janitor)
+library(zoo)
+library(mapview)
+library(leaflet)
+library(sf)
+library(tmap)
+library(mapboxapi)
+library(ggmap)
+library(dotenv)
+library(lubridate)
+library(skimr)
+```
+
+# Exploratory Data Analysis
+## Import data
+
+Let's import the data cleaned in the prior notebook.
+```{r import-data}
+# data for model
+df_catskill <- readRDS("./data/df_catskill.rds") %>% clean_names()
+df_delaware <- readRDS("./data/df_delaware.rds") %>% clean_names()
+
+# site info for mapping
+df_delcat_sites <- readRDS("./data/df_delcat_sites.rds") %>% clean_names()
+df_upstream_sites <- readRDS("./data/upstream_data.rds") %>% clean_names()
+```
+
+Let's first map the sites to get an idea of the data location.
+
+```{r}
+df_delcat_sites
+```
+
+## Map sites
+
+Let's map the sites of the Delaware and Catskill systems.
+```{r leaflet-plot}
+# nyc lat lon
+nyc <- c(40.7128,-74.0060)
+
+# plot map
+(site_map <- leaflet(data = df_delcat_sites) %>% 
+  addProviderTiles("CartoDB.Positron") %>% 
+  addCircleMarkers(lng = ~dec_long_va,
+                   lat = ~dec_lat_va,
+                   fillColor = "red",
+                   fillOpacity = 0.8,
+                   stroke = F,
+                   radius = 4,
+                   label = ~station_nm) %>%
+  setView(lng = nyc[[2]],
+          lat = nyc[[1]]+1,
+          zoom = 7))
+```
+
+**This may be better in the long run as a mapview, or will need to tweak the leaflet map a bit to be publishable**
+
+Let's create a static version of this and save.
+First we need to set the mapbox token for the basemap, and convert the dataframe to an `sf` object. 
+```{r mapbox, message=FALSE}
+# set mapbox token
+mapbox_token <- Sys.getenv("MAPBOX_API")
+mapbox_api <- mb_access_token(mapbox_token,
+                              install = T,
+                              overwrite = T)
+
+# convert to sf object
+df_delcat_sites_sf <- st_as_sf(
+  x = df_delcat_sites,
+  coords = c("dec_long_va","dec_lat_va"),
+  crs = 4326)
+
+# check crs
+st_crs(df_delcat_sites_sf)
+```
+
+Set mapbox tiles.
+
+```{r mapbox-tiles, message=FALSE}
+#set tiles
+nyc_tiles <- 
+  get_static_tiles(
+    location = df_delcat_sites_sf,
+    zoom = 7,
+    buffer_dist = 25000,
+    style_id = "light-v9",
+    username = "mapbox",
+    access_token = mapbox_api
+  )
+```
+
+Let's create abbreviated names and drop some.
+
+```{r shortened-names-title-case}
+(df_delcat_sites_abbrev_sf <- df_delcat_sites_sf %>% 
+  mutate(new_name = str_to_title(sub("(.*)reservoir.*", "\\1", station_nm, ignore.case = TRUE))))
+```
+
+Need to reposition some lables that overlap, create columns for them to plot individually.
+```{r new-col-overlap}
+# new name col list
+new_names <- c("Pepacton","Rondout","Boyd Corners")
+
+# loop
+for (name in new_names) {
+  # Create a new column with NA
+  new_col_name <- paste0("new_name_", tolower(gsub(" ", "_", name)))
+  df_delcat_sites_abbrev_sf[[new_col_name]] <- NA
+  
+  # Assign the new name where applicable
+  df_delcat_sites_abbrev_sf[[new_col_name]][trimws(df_delcat_sites_abbrev_sf$new_name) == name] <- name
+}
+```
+
+Let's plot. 
+
+```{r plot-tmap, warning=FALSE}
+# create map with background
+(tm_site_map <- tm_shape(nyc_tiles, aspect.ratio=1) +
+  tm_rgb() +
+tm_shape(df_delcat_sites_abbrev_sf) +
+  tm_symbols(col = "red", size = 0.35, border.lwd = NA) +
+  tm_text("new_name", size = 1, alpha = 0.8, 
+          xmod = -0.25, ymod = -0.75, remove.overlap = T) +
+  # add boyd corners
+  tm_shape(df_delcat_sites_abbrev_sf[df_delcat_sites_abbrev_sf$new_name_boyd_corners == "Boyd Corners",]) +
+  tm_text("new_name_boyd_corners", size = 1, alpha = 0.8,
+          ymod = 0.75, xmod = -1.5) +
+  # # add rondout
+  # tm_shape(df_delcat_sites_abbrev_sf[df_delcat_sites_abbrev_sf$new_name_rondout== "Rondout",]) +
+  # tm_text("new_name_rondout",size = 0.75, alpha = 0.8,
+  #         ymod = -0.75, xmod = 1) +
+  # # add pepacton
+  # tm_shape(df_delcat_sites_abbrev_sf[df_delcat_sites_abbrev_sf$new_name_pepacton == "Pepacton",]) +
+  # tm_text("new_name_pepacton", size=0.75, alpha = 0.8,
+  #         xmod = 0.25, ymod = -0.75) +
+  tm_scale_bar(position = c(0.01, 0),
+               just = "left") + 
+  tm_compass(position = c("left", "top")) + 
+  tm_credits("(c) Mapbox, OSM    ", 
+             bg.color = "white",
+             position = c("RIGHT", "BOTTOM")) +
+  tm_layout(main.title = "NYC Water Reservoirs"))
+
+# save image
+tmap_save(tm = tm_site_map, filename = "./img/tm_site_map.png")
+```
+
+**This will need to be messed with to get it perfect, can save that for later. For now will export png that shows all labels as stand alone png. We will have to adjust for final rmd. Also would like to do one of the entire system, that can be a nice to have**
+
+**This is also a nice to have**
+### Polygon Map
+I would like to get the actual polygon shapes of the reservoirs and map them as well.
+Let's download them from [NYS GIS Clearinghouse]("https://data.gis.ny.gov/datasets/sharegisny::nys-aquifers/explore?location=42.906518%2C-76.505754%2C7.91")
+
+```{r load-shp}
+# df_nys_aquifiers_sf <- st_read("./data/NYS_Aquifers_-3245031945127731115/NYS_Aquifers.shp") %>% st_transform(4326)
+# 
+# st_crs(df_nys_aquifiers_sf)
+# 
+# mapview(df_nys_aquifiers_sf)
+```
+
+Ok, need to clip this too the centroids being used for this analysis.
+
+```{r clip-shapefile}
+# # create bbox of reservoirs
+# bbox <- st_bbox(df_sites_dv_summary_sf)
+# 
+# # crop polygons to centroid bbox
+# df_nys_aquifiers_sf_crop <- st_crop(df_nys_aquifiers_sf, bbox)
+# 
+# # quickly map
+# mapview(df_nys_aquifiers_sf, 
+#         col.regions="blue", alpha = 0.8, 
+#         layer.name = "NYS Aquifiers",
+#         bbox = bbox) + 
+#   mapview(df_sites_dv_summary_sf, 
+#           col.regions = "red", alpha = 0.8, 
+#           layer.name = "Water Reservoirs", label = "Site")
+```
+
+## Explore Data
+
+Now that we are situated geographically, let's explore the data!!!
+
+### Data Skimming
+
+Let's begin our data exploration by skimming the data for summary statistics, data types and some small histograms.
+```{r data-skim}
+df_catskill %>% 
+  skim()
+```
+
+Here we see we have all `numerical` column types, and a `date` column. It also looks like we have some `null` values.
