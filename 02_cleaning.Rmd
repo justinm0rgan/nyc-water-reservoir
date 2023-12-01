@@ -27,6 +27,9 @@ df_water_usage <- readRDS("./data/water_usage.rds") %>% clean_names()
 df_upstream <- readRDS("./data/upstream_discharge.rds") %>% clean_names()
 df_water_level <- readRDS("./data/water_level.rds") %>% clean_names()
 df_census_data <- readRDS("./data/census_data.rds")
+
+# data for sites
+df_upstream_sites <- readRDS("./data/upstream_data.rds")
 ```
 
 Let's look at the weather data first.
@@ -90,7 +93,7 @@ Ok, now lets select only the columns that are for the elements I would like to b
 # select necessary columns filter for date
 (df_weather_final <- df_weather_long %>% 
   select(c(id, date, tmax, tmin, prcp, snow, snwd, adpt, awnd, rhav)) %>% 
-  filter(date >= "2013-10-01"))
+  filter(date >= "2013-10-01" & date < "2022-10-01"))
 ```
 
 ### Upstream Discharge
@@ -109,7 +112,7 @@ There are 5 columns with 14 rows.
 Let's split the dataset for Catskill and Delaware.
 
 ```{r split-catskill-delaware}
-df_upstream_sites
+df_upstream
 ```
 
 Let's join `station_nm` with upstream data.
@@ -284,6 +287,7 @@ Let's join all data into one contigious dataframe so we can actually do some EDA
   left_join(df_water_level_catskill_join) %>% 
   left_join(df_water_usage_int))
 ```
+
 
 Join Delaware data:
 ```{r join-delaware}

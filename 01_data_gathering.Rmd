@@ -14,6 +14,7 @@ library(dotenv)
 library(rnoaa)
 library(tidycensus)
 library(RSocrata)
+library(skimr)
 ```
 
 # Objective:
@@ -305,12 +306,14 @@ param <- "62614"
 stat_type <- c("00003","00011")
 # define start date
 start_date <- "2013-10-01"
+end_date <- "2022-09-30"
 
 # get data
 site_data_delcat <- readNWISdv(siteNumbers = site_no_delcat, 
            statCd = stat_type,
            parameterCd = param,
-           startDate = start_date) %>% 
+           startDate = start_date,
+           endDate = end_date) %>% 
   renameNWISColumns()
 
 # preview
@@ -374,7 +377,7 @@ all_streamflow_data <- streamflow_info %>%
   left_join(pcode_info, by = "parameter_cd")
 
 # filter by dv and discharge parameter
-(all_streamflow_data <- all_stream_data %>% 
+(all_streamflow_data <- all_streamflow_data %>% 
   filter(data_type_cd == "dv" & parameter_cd == "00060"))
 ```
 
@@ -388,9 +391,10 @@ Ok, we have ample discharge data for these upstream sites, let's get the data fo
 
 ```{r get-stream-data}
 # get stream data
-(all_stream_data_dv <- readNWISdv(siteNumbers = all_stream_data$site_no,
+(all_streamflow_data_dv <- readNWISdv(siteNumbers = all_streamflow_data$site_no,
            parameterCd = "00060",
-           startDate = start_date) %>% renameNWISColumns())
+           startDate = start_date,
+           endDate = end_date) %>% renameNWISColumns())
 ```
 
 Confirm from each site.
@@ -398,7 +402,7 @@ Confirm from each site.
 all_stream_data_dv %>% 
   group_by(site_no) %>% 
   summarise(n = n(), min_date = min(Date), max_date = max(Date)) %>% 
-  left_join(all_stream_data %>% select(site_no, station_nm) %>% distinct(site_no,station_nm)) %>% 
+  left_join(all_streamflow_data %>% select(site_no, station_nm) %>% distinct(site_no,station_nm)) %>% 
   select(site_no, station_nm, everything())
 ```
 
@@ -551,9 +555,4 @@ water_consumption_url <- "https://data.cityofnewyork.us/resource/ia2d-e54m.json"
 Save water data.
 ```{r save-water-usage-data}
 saveRDS(water_data_df,file = "./data/water_usage.rds")
-```
-
-# Appendix 2: Code      
-
-```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
 ```
